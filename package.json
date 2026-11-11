@@ -1,0 +1,13 @@
+{
+  "name": "pedidos360-kafka-local",
+  "version": "1.0.0",
+  "description": "Simulador local de microservicios Pedidos360 con Kafka",
+  "main": "index.js",
+  "scripts": {
+    "topics": "node admin/setup.js",
+    "producer": "node bridge/producer.js"
+  },
+  "dependencies": {
+    "kafkajs": "^2.2.4"
+  }
+}
