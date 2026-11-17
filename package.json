@@ -7,7 +7,6 @@
   "scripts": {
     "topics": "node --env-file-if-exists=.env --disable-warning=TimeoutNegativeWarning admin/setup.js",
     "admin": "node --env-file-if-exists=.env --disable-warning=TimeoutNegativeWarning admin/server.js",
-    "orders": "node --env-file-if-exists=.env --disable-warning=TimeoutNegativeWarning orders/server.js",
     "producer": "node --env-file-if-exists=.env --disable-warning=TimeoutNegativeWarning bridge/producer.js",
     "report": "node --env-file-if-exists=.env --disable-warning=TimeoutNegativeWarning report/consumer.js",
     "audit": "node --env-file-if-exists=.env --disable-warning=TimeoutNegativeWarning audit/consumer.js",

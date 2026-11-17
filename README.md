@@ -1,182 +1,262 @@
 # Pedidos360 · Kafka
 
-Streaming de eventos de pedidos con Kafka y Node.js (KafkaJS). **ms-pedidos360-orders** (la API que usa el frontend) publica cada cambio de estado de un pedido en `pedidos.eventos`. Dos servicios los leen **en paralelo y por separado**:
+Proyecto de **DSY1107 – Desarrollo Cloud Native I (EA3 / EP5)**. Agregamos streaming de eventos con **Apache Kafka** a Pedidos360, nuestra plataforma de pedidos de comida.
 
-- **report** (consumer group `report`): calcula ventas por hora, tiempo de entrega y pedidos activos por estado.
-- **audit** (consumer group `audit`): guarda cada evento para reconstruir el historial (timeline) de un pedido.
+> **Integrantes:** _(completar)_
+> **Repositorios relacionados:** `backend-pedidos360` (serverless AWS), `fronted-pedidos360` (React) y `fronted-pedido360-kafka` (monitor de esta demo).
 
-Los mensajes que no se pueden procesar van a `pedidos.eventos.dlt` con el motivo. Un servicio administrador REST crea, lista, modifica y elimina tópicos y consulta consumer groups y lag.
+---
 
-```text
-Frontend React ─▶ orders/server.js (ms-pedidos360-orders: pedidos + catálogo en SQLite)
-                     │  (o bridge/producer.js: simulador para pruebas y carga)
-                     ▼
-              ──key=pedidoId, acks=-1, idempotente──▶ pedidos.eventos (3 particiones × 3 réplicas, 7 días)
-                                                              ├─ group report ─▶ report/handler.js ─▶ data/report.sqlite
-                                                              └─ group audit  ─▶ audit/handler.js  ─▶ data/audit.sqlite
-            JSON inválido · datos inválidos · 3 intentos fallidos ─▶ pedidos.eventos.dlt (3 × 3, 30 días)
-admin/server.js (Express + KafkaJS Admin) ─▶ tópicos, configuración, grupos y lag
-```
+## 1. ¿Qué problema resolvemos?
 
-La demostración es **100 % local, sin AWS ni LocalStack**. En la nube, el frontend usa API Gateway + Lambda + DynamoDB (`backend-pedidos360`). En local, `ms-pedidos360-orders` cumple ese papel con las mismas rutas y reglas, y además es el productor de Kafka, como en el diagrama de arquitectura. Las tareas (correo, cocina, boleta) siguen siendo responsabilidad de SNS/SQS en la nube y no forman parte de esta demo.
+Pedidos360 ya usaba **SNS + SQS** para tareas como enviar correos, imprimir el ticket de cocina o generar la boleta. Esas colas funcionan bien para **tareas**: el mensaje se procesa y se borra.
 
-## Requisitos
+Después necesitábamos **reportes** (ventas por hora, tiempo de entrega) y un **historial de todo lo que pasó con cada pedido**. Con una cola eso no sirve: si el mensaje se borra al leerlo, nadie más puede leerlo y no se puede volver a calcular nada con los pedidos de la semana pasada.
 
-- Docker Desktop (unos 3 GB de RAM libres para 3 brokers).
-- Node.js 22.13 o superior (se usa `node:sqlite`).
+Por eso usamos Kafka: es un **log de eventos**. Los mensajes **no se borran al leerlos**, sino cuando se cumple el tiempo de retención, y **varios servicios pueden leer los mismos eventos, cada uno a su ritmo**.
 
-## Puesta en marcha
+| | Cola (SQS) | Kafka |
+| --- | --- | --- |
+| Al leer un mensaje | Se borra | Se queda; solo avanza el offset del consumidor |
+| ¿Quién lo lee? | Un consumidor por mensaje | Cada consumer group lee **todos** los mensajes |
+| ¿Se puede releer? | No | Sí, mientras dure la retención |
+| Ideal para | Tareas ("envía este correo") | Hechos ("el pedido 123 fue aceptado") |
 
-```bash
-docker compose up -d          # ZooKeeper + kafka1/2/3 + Kafka UI
-docker compose ps             # los 3 brokers deben quedar "healthy"
-cp .env.example .env          # opcional: los valores por defecto sirven en local
-npm install
-npm run topics                # crea pedidos.eventos y pedidos.eventos.dlt
-```
+---
 
-Kafka UI: <http://localhost:8080>. Brokers desde el computador: `localhost:9092`, `localhost:9093` y `localhost:9094`. Desde la red Docker: `kafkaN:29092`.
-
-Cada servicio corre en su propia terminal:
-
-```bash
-npm run admin                 # REST de administración en http://localhost:3000
-npm run orders                # ms-pedidos360-orders en http://localhost:4000 (lo usa el frontend)
-npm run report
-npm run audit
-npm run producer -- 4         # opcional: 4 pedidos simulados = 20 eventos
-```
-
-### Demo con el frontend
-
-Con `orders`, `report` y `audit` corriendo, en `../fronted-pedidos360`:
-
-```bash
-npm install
-npm run dev:demo              # http://localhost:5173, usa .env.demo
-```
-
-1. **Entrar como Cliente** → Pedidos → Nuevo pedido → Crear. `orders` publica `PEDIDO_CREADO`.
-2. **Salir → Entrar como Operador** → abrir el pedido → Aceptar → Pasar a preparación → Despachar → Marcar como entregado. Cada botón publica un evento.
-3. En el detalle del pedido, la sección **Auditoría (Kafka)** muestra los eventos que guardó el servicio audit, con partición y offset. Se actualiza sola cada 3 s.
-4. Menú **Reportes**: KPIs del servicio report (ventas por hora, tiempo de entrega, activos por estado).
-5. En Kafka UI (<http://localhost:8080>) se ven los mismos mensajes en `pedidos.eventos`.
-
-El login de la demo usa **perfiles locales** (Cliente, Operador, Administrador), sin Microsoft Entra ID. El frontend envía el perfil en los headers `X-User-Id` y `X-User-Role`, y `orders` aplica los mismos permisos que la Lambda. No es un mecanismo de seguridad: sirve solo para la demo local.
-
-## Comandos
-
-| Comando | Qué hace |
-| --- | --- |
-| `npm run topics` | Crea los tópicos del diseño si faltan y muestra su configuración |
-| `npm run admin` | Servicio administrador REST (también crea los tópicos al iniciar) |
-| `npm run orders` | ms-pedidos360-orders: API de pedidos y catálogo para el frontend; productor de Kafka |
-| `npm run producer -- [pedidos] [--max N] [--cancelados]` | Publica pedidos simulados (5 eventos por pedido) |
-| `npm run report` / `npm run audit` | Consumidores; se pueden abrir varias instancias |
-| `npm run errores` | Publica mensajes problemáticos para probar validación, reintentos, DLT e idempotencia |
-| `npm run dlt` | Muestra el contenido de `pedidos.eventos.dlt` |
-| `npm run kpis` | Muestra los KPIs calculados por report (solo lectura) |
-| `npm run timeline -- [pedidoId]` | Muestra el historial guardado por audit (solo lectura) |
-
-## Estructura
+## 2. ¿Qué construimos?
 
 ```text
-docker-compose.yml        ZooKeeper, 3 brokers y Kafka UI
+                         ┌──────────────────────── Kafka (3 brokers) ───────────────────────┐
+ bridge/producer.js ───▶ │ pedidos.eventos      (3 particiones · 3 réplicas · 7 días)        │
+ (simula los pedidos)    │ pedidos.eventos.dlt  (3 particiones · 3 réplicas · 30 días)       │
+                         └──────────────┬─────────────────────────────┬─────────────────────┘
+                                        │ group "report"              │ group "audit"
+                                        ▼                             ▼
+                              report/handler.js              audit/handler.js
+                              calcula KPIs                   guarda cada evento
+                              (data/report.sqlite)           (data/audit.sqlite)
+                                        └──────────────┬──────────────┘
+                                                       ▼
+                   admin/server.js (Express) ── API REST de administración + /api/monitor/*
+                                                       ▲
+                               fronted-pedido360-kafka (React) ── monitor sin login
+```
+
+- **Productor** (`bridge/producer.js`): publica los cambios de estado de pedidos simulados (CREADO → ACEPTADO → EN_PREPARACION → DESPACHADO → ENTREGADO). La diapositiva 46 permite simular los eventos con un script, así que en local no necesitamos AWS.
+- **report**: lee todos los eventos y calcula **ventas por hora**, **tiempo de entrega** y **pedidos activos por estado**.
+- **audit**: lee los mismos eventos y guarda cada uno en una tabla para armar el **historial de cada pedido**.
+- **DLT** (`pedidos.eventos.dlt`): ahí van los mensajes que no se pudieron procesar, junto con el motivo.
+- **admin**: API REST para crear, listar, modificar y borrar tópicos, ver los consumer groups y su lag. También entrega los resultados al monitor.
+- **Kafka UI** (<http://localhost:8080>): interfaz web para ver los tópicos, los mensajes y los consumidores.
+
+Todo corre **local**, sin AWS ni LocalStack.
+
+---
+
+## 3. Conceptos de Kafka que aplicamos
+
+| Concepto | Qué es (en simple) | Dónde lo usamos |
+| --- | --- | --- |
+| **Topic** | El "canal" donde se publican los eventos de un mismo tipo | `pedidos.eventos` y `pedidos.eventos.dlt` |
+| **Partición** | Un "carril" del topic. Más carriles permiten más consumidores en paralelo | 3 particiones por topic |
+| **Offset** | La posición de un mensaje en su partición: el "marcapáginas" del consumidor | Se ve en los logs, en Kafka UI y en el monitor |
+| **Key** | Decide a qué partición va el mensaje. Misma key, misma partición, orden garantizado | `key = pedidoId` |
+| **Consumer group** | Un equipo de consumidores. Los del mismo grupo se reparten el trabajo y los de grupos distintos reciben todo | grupos `report` y `audit` |
+| **Réplicas** | Copias de cada partición en otros brokers, para no perder datos si uno se cae | 3 réplicas, `min.insync.replicas = 2` |
+| **acks = all** | El productor espera que el líder y las réplicas confirmen | `acks: -1` en KafkaJS |
+| **Lag** | Cuántos mensajes le faltan por leer a un grupo | `GET /admin/groups/:grupo/lag` |
+| **DLT** | El tópico de "objetos perdidos": guarda lo que falló, con su motivo | `pedidos.eventos.dlt` |
+| **Idempotencia** | Procesar el mismo mensaje 2 veces tiene el mismo efecto que procesarlo 1 vez | report y audit ignoran un `eventId` repetido |
+
+---
+
+## 4. Requisitos
+
+- **Docker Desktop**, con unos 3 GB de RAM libres porque levantamos 3 brokers.
+- **Node.js 22.13 o superior**. Usamos `node:sqlite`, que viene incluido en Node.
+
+---
+
+## 5. Cómo ejecutarlo paso a paso
+
+### Paso 1: levantar Kafka
+
+```bash
+docker compose up -d
+docker compose ps        # esperar a que kafka1, kafka2 y kafka3 digan "healthy"
+```
+
+Esto levanta ZooKeeper, 3 brokers y Kafka UI en <http://localhost:8080>.
+
+### Paso 2: instalar y crear los tópicos
+
+```bash
+npm install
+cp .env.example .env     # opcional: los valores por defecto ya sirven
+npm run topics
+```
+
+Debería mostrar:
+
+```text
+- pedidos.eventos: 3 particiones, 3 réplicas, 7 días, cleanup=delete, min.insync=2
+- pedidos.eventos.dlt: 3 particiones, 3 réplicas, 30 días, cleanup=delete, min.insync=2
+```
+
+### Paso 3: levantar los servicios (cada uno en su terminal)
+
+```bash
+npm run admin            # API en http://localhost:3000
+npm run report           # consumidor del grupo "report"
+npm run audit            # consumidor del grupo "audit"
+```
+
+### Paso 4: publicar pedidos
+
+```bash
+npm run producer -- 4    # 4 pedidos × 5 estados = 20 eventos
+```
+
+En las terminales de report y audit aparece un log por cada evento procesado.
+
+### Paso 5: ver los resultados
+
+- **Monitor** (recomendado para la demo), en el repo `fronted-pedido360-kafka`:
+  ```bash
+  cd ../fronted-pedido360-kafka
+  npm install
+  npm run dev            # http://localhost:5174
+  ```
+- **En la terminal:** `npm run kpis` para los reportes y `npm run timeline` para la auditoría.
+- **Kafka UI:** Topics → `pedidos.eventos` → Messages.
+
+---
+
+## 6. Guion para la demostración
+
+1. Mostrar `docker compose ps` y, en Kafka UI, los **3 brokers** y los **2 tópicos con 3 particiones y 3 réplicas**.
+2. Abrir el **monitor** (<http://localhost:5174>) con `admin`, `report` y `audit` corriendo.
+3. Ejecutar `npm run producer -- 2` y mostrar cómo el monitor se actualiza solo: suben los eventos y aparecen en la auditoría.
+4. En Kafka UI, abrir un mensaje y mostrar la **key** (`pedidoId`), el **JSON** del evento y el header **`correlationId`**.
+5. Hacer los **experimentos** de la sección 7, sobre todo el 2 (rebalanceo), el 4 (lag) y el 5 (DLT).
+
+---
+
+## 7. Experimentos de la clase (diapositiva 44)
+
+| # | Qué hacemos | Qué deberíamos ver |
+| --- | --- | --- |
+| 1 | `npm run producer -- 3 --max 10` | En Kafka UI, cada `pedidoId` siempre en la **misma partición** |
+| 2 | Abrir `npm run report` en **2 terminales** y luego cerrar una | En el log `grupo.asignacion` se reparten las particiones (ej. `[0,1]` y `[2]`). Al cerrar una, la otra toma `[0,1,2]` (**rebalanceo**) |
+| 3 | Levantar `audit` después de que report ya leyó | audit recibe **todos** los eventos igual, porque es otro grupo con su propio offset |
+| 4 | Detener report, ejecutar `npm run producer -- 4` y consultar `curl localhost:3000/admin/groups/report/lag` | `lagTotal: 20`. Al volver a levantar report, el lag baja a **0** |
+| 5 | `npm run errores` y luego `npm run dlt` | JSON roto, evento sin `pedidoId` y falla permanente quedan en el **DLT** con su motivo. La falla temporal se procesa al **segundo intento**, el duplicado **no se procesa dos veces** y el último evento se procesa normal |
+
+> En Kafka UI, la lista **Consumers** muestra el lag como `N/A`. Para ver el valor real hay que entrar al grupo (*Total lag*).
+
+---
+
+## 8. Cómo está organizado el código
+
+```text
+docker-compose.yml        ZooKeeper + 3 brokers + Kafka UI
+.env.example              variables de entorno (brokers, particiones, réplicas, reintentos)
 shared/
-  config.js               variables de entorno (KAFKA_BROKERS, particiones, réplicas, reintentos)
-  kafka.js                crearKafka(clientId): único punto de configuración del cliente
-  topics.js               nombres y configuración de los tópicos (versionada)
-  dto.js                  evento de pedido: crearEvento, validar, serializar, deserializar
-  consumer-base.js        mensajería común: leer → validar → reintentar → DLT → commit
-  db.js                   SQLite local
-orders/server.js          ms-pedidos360-orders: rutas REST, roles y publicación en Kafka
-orders/handler.js         lógica de pedidos y catálogo (transiciones, stock) en SQLite
-orders/catalogo-inicial.json  productos de ejemplo
-bridge/producer.js        productor: key, acks, idempotencia y correlationId (+ simulador)
-report/consumer.js        group "report" (solo mensajería)
+  config.js               lee las variables de entorno
+  kafka.js                crearKafka(): un solo lugar para configurar el cliente
+  topics.js               nombres y configuración de los tópicos
+  dto.js                  el evento de pedido: crear, validar, serializar
+  consumer-base.js        lo común a los consumidores: validar → reintentar → DLT
+  db.js                   conexión a SQLite
+bridge/producer.js        productor (simula los pedidos)
+report/consumer.js        se conecta a Kafka con el grupo "report"
 report/handler.js         lógica de negocio: KPIs
-audit/consumer.js         group "audit"
-audit/handler.js          lógica de negocio: tabla de eventos y timeline
-admin/topicos.js          operaciones de KafkaJS Admin
-admin/server.js           API REST
-admin/setup.js            creación de tópicos por línea de comandos
-scripts/                  errores, dlt, kpis y timeline
+audit/consumer.js         se conecta a Kafka con el grupo "audit"
+audit/handler.js          lógica de negocio: guardar eventos e historial
+admin/server.js           API REST (Express)
+admin/topicos.js          operaciones de administración con KafkaJS Admin
+admin/setup.js            crea los tópicos desde la terminal
+scripts/                  errores, dlt, kpis y timeline (herramientas de prueba)
 ```
 
-## Decisiones de diseño
+**Separamos la mensajería de la lógica de negocio.** Cada servicio tiene un `consumer.js`, que solo se conecta a Kafka, y un `handler.js`, con la lógica (calcular KPIs o guardar eventos). La parte repetida (validar, reintentar y enviar al DLT) está una sola vez en `shared/consumer-base.js`.
+
+---
+
+## 9. Decisiones que tomamos (y por qué)
 
 ### Tópicos
 
-| Tópico | Particiones | Réplicas | min.insync | Retención | Cleanup | Key | Lo leen |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `pedidos.eventos` | 3 | 3 | 2 | 7 días | delete | pedidoId | grupos report y audit |
-| `pedidos.eventos.dlt` | 3 | 3 | 2 | 30 días | delete | pedidoId | revisión manual o reproceso |
+| Tópico | Particiones | Réplicas | Retención | Key | ¿Por qué? |
+| --- | --- | --- | --- | --- | --- |
+| `pedidos.eventos` | 3 | 3 | 7 días | pedidoId | 3 carriles para escalar. 7 días permiten releer la semana para reportes |
+| `pedidos.eventos.dlt` | 3 | 3 | 30 días | pedidoId | Los fallos se guardan más tiempo para investigarlos |
 
-- **3 particiones:** hasta 3 instancias de cada servicio trabajan en paralelo.
-- **Key = pedidoId:** todos los eventos de un pedido caen en la misma partición, y por eso se procesan en orden.
-- **3 réplicas y min.insync = 2:** si se cae un broker no se pierden datos y se puede seguir escribiendo con `acks=all`.
-- **7 días:** permiten releer la semana para reportería. Los 30 días del DLT dan tiempo para investigar los fallos.
-- El DLT usa 3 particiones y 3 réplicas para cumplir el criterio "dos tópicos con 3 particiones y 3 réplicas". La clase sugiere 1 partición. Ambas opciones se configuran por variables de entorno.
+- **Key = pedidoId:** así los eventos de un pedido llegan **en orden**. Si cayeran en particiones distintas, "ENTREGADO" podría procesarse antes que "ACEPTADO".
+- **3 réplicas y `min.insync.replicas = 2`:** si se cae un broker, no se pierde nada y se puede seguir escribiendo.
+- La clase sugiere 1 partición para el DLT, pero la evaluación pide **dos tópicos con 3 particiones y 3 réplicas**, así que usamos 3. Se puede cambiar en `.env`.
 
-### Evento (DTO)
+### El evento (DTO)
 
 ```json
-{ "eventId": "uuid", "tipo": "PEDIDO_CREADO", "pedidoId": "PED-…-001", "clienteId": "C-100", "total": 5990, "fecha": "2026-11-17T04:49:38.279Z" }
+{
+  "eventId": "27e52397-62de-4744-b23d-0a0a27aaf8cc",
+  "tipo": "PEDIDO_ENTREGADO",
+  "pedidoId": "PED-MWL2CS60-001",
+  "clienteId": "C-100",
+  "total": 10990,
+  "fecha": "2026-11-17T06:36:28.736Z"
+}
 ```
 
-`tipo` admite `PEDIDO_CREADO`, `PEDIDO_ACEPTADO`, `PEDIDO_EN_PREPARACION`, `PEDIDO_DESPACHADO`, `PEDIDO_ENTREGADO` y `PEDIDO_CANCELADO`. Cada mensaje lleva el header `correlationId`, compartido por todos los eventos de un mismo pedido, para rastrearlo de punta a punta.
+Cada mensaje lleva además el header `correlationId`, el mismo en todos los eventos de un pedido, para seguirlo de punta a punta.
 
-### Productores
+### Productor
 
-`acks: -1` (all), `idempotent: true` con `maxInFlightRequests: 1`, y validación del DTO antes de enviar.
+- `acks: -1` (all): espera la confirmación de las réplicas, así no se pierden pedidos.
+- `idempotent: true`: si la red falla y reintenta, Kafka no duplica el mensaje.
+- Valida el evento **antes** de enviarlo.
 
-- **ms-pedidos360-orders** publica un evento por cada acción del frontend: crear pedido y cada cambio de estado, incluida la cancelación. La Lambda publicaba solo ACEPTADO y DESPACHADO, lo que no alcanza para los KPIs. El `correlationId` es el id del pedido. Orden de operaciones: valida → **publica en Kafka** → guarda en SQLite. Si Kafka no confirma, responde 503 y el pedido no cambia. Al aceptar, se verifica y descuenta el stock, igual que la Lambda.
-- **bridge/producer.js** (simulador) genera pedidos completos sin pasar por la UI, para los experimentos y la carga. Sus fechas se simulan dentro de las últimas 3 horas, con 5 a 15 minutos entre estados.
+### Manejo de errores en los consumidores
 
-### API de ms-pedidos360-orders (puerto 4000)
+1. **El mensaje viene mal** (JSON roto o le falta un campo): va **directo al DLT**, porque reintentar no lo arregla.
+2. **Falla al procesar** (por ejemplo, la base de datos ocupada): se reintenta **3 veces**, esperando 1 s y luego 2 s. Si sigue fallando, va al DLT.
+3. En el DLT queda el mensaje original, el **motivo**, el grupo, los intentos, el `correlationId`, la partición y el offset.
+4. Un mensaje malo **no bloquea** a los siguientes: se manda al DLT y el consumidor sigue.
+5. Kafka entrega **al menos una vez**, así que un mensaje puede llegar repetido. Por eso report y audit guardan el `eventId` y **no aplican dos veces** el mismo evento.
 
-| Método | Ruta | Rol |
-| --- | --- | --- |
-| GET | `/api/orders` (`?cliente_id=`) | todos (el cliente solo ve los suyos) |
-| GET | `/api/orders/:id` | todos (el cliente solo los suyos) |
-| POST | `/api/orders` `{ cliente_id, items: [{ producto_id, cantidad }] }` | Cliente, Operador |
-| PATCH | `/api/orders/:id/estado` `{ estado }` | Operador, Administrador |
-| GET | `/api/catalog` | público |
-| POST / PATCH / DELETE | `/api/catalog[/:id]`, `PATCH /api/catalog/:id/stock` | Administrador |
-| GET | `/api/reports/kpis` | Operador, Administrador (lee los resultados de report) |
-| GET | `/api/audit/:pedidoId` | todos (el cliente solo sus pedidos; lee los resultados de audit) |
-
-### Consumidores y manejo de errores
-
-1. **JSON inválido o datos inválidos:** el mensaje va directo al DLT, porque reintentar no lo arregla.
-2. **Error al procesar:** hasta 3 intentos, esperando 1 s y luego 2 s entre ellos. Si los 3 fallan, va al DLT con `motivo = "agotados los reintentos"`.
-3. El DLT guarda el mensaje original, el motivo, el grupo, los intentos, el `correlationId` y el origen (partición y offset).
-4. Al terminar sin error, KafkaJS confirma el offset. La entrega es **al menos una vez**, así que los dos servicios son **idempotentes** por `eventId`: un evento repetido no duplica efectos.
-5. Para demostrar reintentos sin romper nada, `consumer-base.js` acepta el header de prueba `simularFallo` (`temporal` o `permanente`). Solo lo usa `npm run errores`.
-
-Cada grupo lee todos los mensajes. Por eso un mensaje malo aparece **dos veces** en el DLT, una por grupo (campo `grupo`).
+> Para mostrar los reintentos sin romper nada, `npm run errores` envía mensajes con el header de prueba `simularFallo`.
 
 ### KPIs de report
 
-- **Ventas por hora:** pedidos `ENTREGADO`, agrupados por la hora UTC de entrega (cantidad y monto).
-- **Tiempo de entrega:** minutos entre `PEDIDO_CREADO` y `PEDIDO_ENTREGADO` (promedio, mínimo y máximo).
-- **Pedidos activos por estado:** pedidos que no están `ENTREGADO` ni `CANCELADO`.
+- **Ventas por hora:** pedidos ENTREGADOS, agrupados por hora UTC, con cantidad y monto.
+- **Tiempo de entrega:** minutos entre PEDIDO_CREADO y PEDIDO_ENTREGADO (promedio, mínimo y máximo).
+- **Pedidos activos por estado:** los que no están ENTREGADOS ni CANCELADOS.
 
-SQLite reemplaza localmente a la base de KPIs y auditoría del diagrama de clase.
+### ¿Por qué SQLite?
 
-## API del administrador
+En el diagrama de la clase los KPIs y la auditoría se guardan en Oracle. Para trabajar local y simple usamos **SQLite**, que viene incluido en Node y no necesita instalar nada.
 
-| Método | Ruta | Cuerpo / query |
+---
+
+## 10. API del administrador (puerto 3000)
+
+| Método | Ruta | Para qué |
 | --- | --- | --- |
-| POST | `/admin/topics/setup` | crea los tópicos del diseño |
-| POST | `/admin/topics` | `{ "topic", "particiones", "replicas", "retencionDias", "cleanupPolicy" }` |
-| GET | `/admin/topics` | lista con particiones, réplicas, ISR, retención y mensajes |
-| GET | `/admin/topics/:topic` | detalle de un tópico |
-| PUT | `/admin/topics/:topic/config` | `{ "retencionDias", "cleanupPolicy", "minInsyncReplicas" }` |
-| PUT | `/admin/topics/:topic/partitions` | `{ "total" }` (solo se puede aumentar) |
-| DELETE | `/admin/topics/:topic` | elimina el tópico |
-| GET | `/admin/groups` | consumer groups, estado y miembros |
-| GET | `/admin/groups/:groupId/lag` | lag por partición (`?topic=` opcional) |
+| POST | `/admin/topics/setup` | Crear los tópicos del diseño |
+| POST | `/admin/topics` | Crear un tópico: `{ "topic", "particiones", "replicas", "retencionDias", "cleanupPolicy" }` |
+| GET | `/admin/topics` | Listar tópicos con particiones, réplicas, retención y cantidad de mensajes |
+| GET | `/admin/topics/:topic` | Detalle de un tópico |
+| PUT | `/admin/topics/:topic/config` | Cambiar `retencionDias`, `cleanupPolicy` o `minInsyncReplicas` |
+| PUT | `/admin/topics/:topic/partitions` | Aumentar particiones: `{ "total" }` |
+| DELETE | `/admin/topics/:topic` | Borrar un tópico |
+| GET | `/admin/groups` | Ver consumer groups y sus miembros |
+| GET | `/admin/groups/:groupId/lag` | Ver el lag de un grupo por partición |
+| GET | `/api/monitor/kpis` | KPIs de report (lo usa el monitor) |
+| GET | `/api/monitor/eventos` | Últimos 50 eventos de audit (lo usa el monitor) |
+
+Ejemplos:
 
 ```bash
 curl -X POST localhost:3000/admin/topics -H "content-type: application/json" -d '{"topic":"prueba","particiones":2,"replicas":3,"retencionDias":1}'
@@ -185,33 +265,79 @@ curl localhost:3000/admin/groups/report/lag
 curl -X DELETE localhost:3000/admin/topics/prueba
 ```
 
-## Experimentos (diapositiva 44)
+---
 
-| # | Pasos | Qué se observa |
-| --- | --- | --- |
-| 1 | `npm run producer -- 3 --max 10` | En Kafka UI (Topics → pedidos.eventos → Messages) cada `pedidoId` queda siempre en la misma partición. Con pocas keys puede quedar una partición vacía |
-| 2 | Abrir `npm run report` en 2 terminales y cerrar una | El log `grupo.asignacion` muestra el reparto (ej. `[0,1]` y `[2]`). Al cerrar una, la otra recibe `[0,1,2]`. Si el proceso muere sin cerrarse, el rebalanceo ocurre tras el session timeout (unos 30 s) |
-| 3 | Levantar `npm run audit` después de report | audit recibe todos los eventos desde el inicio (`npm run timeline`) |
-| 4 | Detener report, `npm run producer -- 4` y luego `curl localhost:3000/admin/groups/report/lag` | `lagTotal: 20`. Al volver a levantar report, el lag baja a 0 |
-| 5 | `npm run errores` y luego `npm run dlt` | JSON roto, evento sin `pedidoId` y falla permanente en el DLT con su motivo. La falla temporal se procesa al segundo intento, el duplicado aparece con `"duplicado":true` y el evento final se procesa |
+## 11. Rúbrica: dónde está cada indicador (diapositiva 45)
 
-En Kafka UI, la lista **Consumers** muestra el lag como `N/A`. El valor real aparece al entrar al grupo (`report` o `audit` → *Total lag*).
+| Indicador | Dónde está |
+| --- | --- |
+| Configuración del cliente Kafka (brokers, particiones, réplicas) | `shared/kafka.js`, `shared/config.js`, `shared/topics.js`, `docker-compose.yml` |
+| Productores y consumidores con DTO | `shared/dto.js`, `bridge/producer.js`, `report/` y `audit/` |
+| Productores con DTO y serializers | `bridge/producer.js` (JSON, key, headers, acks, idempotencia) |
+| Consumidores con lógica separada de la mensajería | `consumer.js` (mensajería) y `handler.js` (negocio) |
+| Manejo de errores: logs, validación, reintentos | `shared/consumer-base.js` y los logs JSON de cada servicio |
+| Parámetros de tópicos (retención, cleanup, particiones, RF) | `shared/topics.js` y `PUT /admin/topics/:topic/config` |
+| Consumer groups | grupos `report` y `audit` (experimentos 2, 3 y 4) |
+| Servicio administrador (tópicos y grupos) | `admin/server.js` y `admin/topicos.js` |
+| Docker Compose con ZooKeeper, brokers y Kafka UI | `docker-compose.yml` |
 
-También se puede usar el CLI de Kafka:
+---
+
+## 12. Comandos
+
+| Comando | Qué hace |
+| --- | --- |
+| `npm run topics` | Crea los tópicos si no existen y muestra su configuración |
+| `npm run admin` | API de administración y del monitor |
+| `npm run report` / `npm run audit` | Consumidores (se pueden abrir varias instancias) |
+| `npm run producer -- [pedidos] [--max N] [--cancelados]` | Publica pedidos simulados |
+| `npm run errores` | Publica mensajes con errores para probar el DLT y los reintentos |
+| `npm run dlt` | Muestra lo que hay en el DLT |
+| `npm run kpis` | Muestra los reportes en la terminal |
+| `npm run timeline -- [pedidoId]` | Muestra la auditoría en la terminal |
+
+---
+
+## 13. Problemas comunes
+
+| Problema | Solución |
+| --- | --- |
+| `There is no leader for this topic-partition` o errores de conexión al iniciar | Los brokers todavía están partiendo. Esperar a que `docker compose ps` muestre los 3 *healthy* |
+| `The group coordinator is not available` la primera vez | Es normal: Kafka está creando su tópico interno de offsets. Se resuelve solo en unos segundos |
+| El monitor dice "No se pudo actualizar" | Falta levantar `npm run admin` |
+| El monitor muestra datos viejos | Falta levantar `npm run report` o `npm run audit` |
+| Quiero partir de cero | `docker compose down -v` y borrar la carpeta `data/` |
+
+---
+
+## 14. De local a la nube (EC2)
+
+El código no cambia: solo se modifica la variable `KAFKA_BROKERS`.
+
+1. En la EC2: `KAFKA_HOST=<ip-de-la-ec2> docker compose up -d`.
+2. En el computador, en `.env`: `KAFKA_BROKERS=<ip>:9092,<ip>:9093,<ip>:9094`.
+3. Abrir en el security group los puertos 9092-9094 y 8080 **solo para nuestra IP**.
+4. **Apagar la EC2** al terminar, para no gastar créditos del Learner Lab.
+
+No usamos MSK porque cobra por clúster encendido aunque nadie lo esté usando.
+
+---
+
+## 15. Detener todo
 
 ```bash
-docker compose exec kafka1 kafka-consumer-groups --bootstrap-server localhost:29092 --describe --group report
+docker compose down        # apaga Kafka y conserva los datos
+docker compose down -v     # apaga y borra tópicos y offsets
 ```
 
-## De local a EC2
+Si se usa `-v`, hay que borrar también la carpeta `data/`, porque ahí está registrado qué eventos ya se procesaron.
 
-En la EC2 se ejecuta `KAFKA_HOST=<ip-pública-o-privada> docker compose up -d`, y en el computador se apunta `KAFKA_BROKERS=<ip>:9092,<ip>:9093,<ip>:9094` en `.env`. El código no cambia. El security group debe abrir solo para tu IP los puertos 9092-9094 y 8080. Detén la instancia al terminar.
+---
 
-## Detener
+## 16. Lo que aprendimos
 
-```bash
-docker compose down           # conserva los datos (volúmenes)
-docker compose down -v        # borra también los tópicos y offsets
-```
-
-Si se borran los volúmenes, borra también `data/`, porque guarda qué eventos ya se procesaron.
+- La diferencia entre **colas** (tareas que se borran) y **logs** (hechos que se pueden releer).
+- Que la **key** es lo que mantiene el orden de los eventos de un pedido.
+- Que dos **consumer groups** distintos reciben los mismos mensajes, y que dentro de un grupo se reparten las particiones.
+- Que el **lag** sirve para saber si un consumidor va atrasado o se cayó.
+- Que un buen consumidor **valida, reintenta, manda al DLT y es idempotente**, para que un mensaje malo no bloquee a todos.

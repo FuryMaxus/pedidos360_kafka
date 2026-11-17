@@ -1,9 +1,12 @@
-// Servicio administrador de Kafka (REST con Express + KafkaJS Admin).
+// Servicio administrador de Kafka (REST con Express + KafkaJS Admin)
+// y API de solo lectura con los resultados de report y audit (para el monitor).
 const express = require('express');
 const { crearKafka } = require('../shared/kafka');
 const { PEDIDOS } = require('../shared/topics');
 const config = require('../shared/config');
 const ops = require('./topicos');
+const report = require('../report/handler');
+const audit = require('../audit/handler');
 
 const admin = crearKafka('pedidos360-admin').admin();
 const app = express();
@@ -33,11 +36,19 @@ app.delete('/admin/topics/:topic', ruta(req => ops.eliminarTopico(admin, req.par
 app.get('/admin/groups', ruta(() => ops.listarGrupos(admin)));
 app.get('/admin/groups/:groupId/lag', ruta(req => ops.lagDelGrupo(admin, req.params.groupId, req.query.topic || PEDIDOS)));
 
+// Rutas de solo lectura para el monitor (repositorio fronted-pedido360-kafka):
+// muestran lo que calcularon report y audit a partir de Kafka.
+app.get('/api/monitor/kpis', ruta(() => report.kpis()));
+app.get('/api/monitor/eventos', ruta(() => audit.ultimosEventos(50)));
+
 async function main() {
   await admin.connect();
   const { creados } = await ops.crearTopicosBase(admin);
   if (creados.length) console.log('Tópicos creados al iniciar:', creados.join(', '));
-  const servidor = app.listen(config.adminPort, () => console.log(`Admin Kafka en http://localhost:${config.adminPort}/admin/topics`));
+  const servidor = app.listen(config.adminPort, () => {
+    console.log(`Admin Kafka en http://localhost:${config.adminPort}/admin/topics`);
+    console.log(`API monitor en http://localhost:${config.adminPort}/api/monitor/kpis`);
+  });
   const cerrar = async () => { servidor.close(); await admin.disconnect(); process.exit(0); };
   process.once('SIGINT', cerrar);
   process.once('SIGTERM', cerrar);

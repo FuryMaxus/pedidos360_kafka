@@ -19,7 +19,6 @@ const config = {
   esperaBaseMs: entero('CONSUMER_RETRY_BASE_MS', 1000),
 
   adminPort: entero('ADMIN_PORT', 3000),
-  ordersPort: entero('ORDERS_PORT', 4000),
   dataDir: path.resolve(process.env.DATA_DIR || path.join(__dirname, '..', 'data'))
 };
 

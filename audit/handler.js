@@ -46,4 +46,10 @@ function resumen() {
   };
 }
 
-module.exports = { procesar, timeline, resumen };
+/** Consulta de solo lectura: últimos eventos recibidos de todos los pedidos. */
+function ultimosEventos(limite = 50) {
+  return db.prepare(`SELECT pedido_id AS pedidoId, tipo, fecha, total, particion, offset, recibido_en AS recibidoEn
+                     FROM eventos ORDER BY recibido_en DESC LIMIT ?`).all(limite);
+}
+
+module.exports = { procesar, timeline, resumen, ultimosEventos };
