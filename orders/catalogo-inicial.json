@@ -1,0 +1,6 @@
+[
+  { "id": "PRD-001", "nombre": "Pizza Margarita", "precio": 10990, "stock": 50 },
+  { "id": "PRD-002", "nombre": "Hamburguesa Doble Queso", "precio": 8490, "stock": 40 },
+  { "id": "PRD-003", "nombre": "Sushi Roll Avocado (10 uds)", "precio": 7990, "stock": 30 },
+  { "id": "PRD-004", "nombre": "Papas Fritas Rusticas", "precio": 3990, "stock": 80 }
+]

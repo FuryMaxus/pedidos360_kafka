@@ -1,13 +1,23 @@
 {
-  "name": "pedidos360-kafka-local",
-  "version": "1.0.0",
-  "description": "Simulador local de microservicios Pedidos360 con Kafka",
-  "main": "index.js",
+  "name": "pedidos360-kafka",
+  "version": "2.0.0",
+  "private": true,
+  "description": "Pedidos360: streaming de eventos de pedidos con Kafka, consumidores report y audit, DLT y administrador REST",
+  "engines": { "node": ">=22.13.0" },
   "scripts": {
-    "topics": "node admin/setup.js",
-    "producer": "node bridge/producer.js"
+    "topics": "node --env-file-if-exists=.env --disable-warning=TimeoutNegativeWarning admin/setup.js",
+    "admin": "node --env-file-if-exists=.env --disable-warning=TimeoutNegativeWarning admin/server.js",
+    "orders": "node --env-file-if-exists=.env --disable-warning=TimeoutNegativeWarning orders/server.js",
+    "producer": "node --env-file-if-exists=.env --disable-warning=TimeoutNegativeWarning bridge/producer.js",
+    "report": "node --env-file-if-exists=.env --disable-warning=TimeoutNegativeWarning report/consumer.js",
+    "audit": "node --env-file-if-exists=.env --disable-warning=TimeoutNegativeWarning audit/consumer.js",
+    "errores": "node --env-file-if-exists=.env --disable-warning=TimeoutNegativeWarning scripts/errores.js",
+    "dlt": "node --env-file-if-exists=.env --disable-warning=TimeoutNegativeWarning scripts/dlt.js",
+    "kpis": "node --env-file-if-exists=.env --disable-warning=TimeoutNegativeWarning scripts/kpis.js",
+    "timeline": "node --env-file-if-exists=.env --disable-warning=TimeoutNegativeWarning scripts/timeline.js"
   },
   "dependencies": {
+    "express": "^5.1.0",
     "kafkajs": "^2.2.4"
   }
 }

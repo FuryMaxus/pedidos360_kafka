@@ -1,36 +1,21 @@
-const { Kafka } = require('kafkajs');
+// Crea los tópicos del diseño (pedidos.eventos y pedidos.eventos.dlt) y muestra su configuración.
+const { crearKafka } = require('../shared/kafka');
 const { TOPICOS } = require('../shared/topics');
+const { crearTopicosBase, describirTopico } = require('./topicos');
 
-const kafka = new Kafka({
-  clientId: 'admin-pedidos360',
-  brokers: ['localhost:9093', 'localhost:9094'],
-  connectionTimeout: 10000
-});
-
-async function setup() {
-
-    const admin = kafka.admin();
-    console.log('Conectando a Kafka Admin...');
-    await admin.connect();
-
-    console.log('Creando tópicos con factor de replicación 2...');
-
-
-    const success = await admin.createTopics({
-        waitForLeaders: true,
-        timeout: 30000,
-        topics: TOPICOS
-    });
-
-    if (success) {
-        console.log('¡Tópicos creados exitosamente con su configuración avanzada!');
-    } else {
-        console.log('Los tópicos ya existían.');
+async function main() {
+  const admin = crearKafka('pedidos360-admin-setup').admin();
+  await admin.connect();
+  try {
+    const resultado = await crearTopicosBase(admin);
+    console.log('Tópicos creados:', resultado.creados.join(', ') || 'ninguno (ya existían)');
+    for (const { topic } of TOPICOS) {
+      const t = await describirTopico(admin, topic);
+      console.log(`- ${t.topic}: ${t.particiones} particiones, ${t.replicas} réplicas, ${t.retencionDias} días, cleanup=${t.cleanupPolicy}, min.insync=${t.minInsyncReplicas}`);
     }
-
-    const existingTopics = await admin.listTopics();
-    console.log('Tópicos activos:', existingTopics.filter(t => !t.startsWith('_')));
-
+  } finally {
     await admin.disconnect();
-}   
-setup().catch(console.error);
+  }
+}
+
+main().catch(error => { console.error('Error creando tópicos:', error.message); process.exitCode = 1; });
