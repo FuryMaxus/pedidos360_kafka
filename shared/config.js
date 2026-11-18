@@ -17,6 +17,8 @@ const config = {
 
   intentos: entero('CONSUMER_MAX_ATTEMPTS', 3),
   esperaBaseMs: entero('CONSUMER_RETRY_BASE_MS', 1000),
+  // Demora artificial por mensaje para simular un consumidor lento (caso del lag). 0 = sin demora.
+  demoraMs: entero('PROCESS_DELAY_MS', 0),
 
   adminPort: entero('ADMIN_PORT', 3000),
   dataDir: path.resolve(process.env.DATA_DIR || path.join(__dirname, '..', 'data'))

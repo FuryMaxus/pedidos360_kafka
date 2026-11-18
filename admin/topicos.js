@@ -4,12 +4,24 @@ const { ConfigResourceTypes } = require('kafkajs');
 const { TOPICOS, dias } = require('../shared/topics');
 const config = require('../shared/config');
 
-/** Crea los tópicos del diseño que falten. No modifica los existentes. */
+const CONFIGS = ['retention.ms', 'retention.bytes', 'cleanup.policy', 'min.insync.replicas'];
+
+/**
+ * Crea los tópicos del diseño que falten y, a los que ya existen, les aplica la
+ * configuración de shared/topics.js (así un cambio en el código llega a Kafka).
+ */
 async function crearTopicosBase(admin) {
   const existentes = new Set(await admin.listTopics());
   const faltantes = TOPICOS.filter(t => !existentes.has(t.topic));
+  const actualizados = TOPICOS.filter(t => existentes.has(t.topic));
   if (faltantes.length) await admin.createTopics({ topics: faltantes, waitForLeaders: true });
-  return { creados: faltantes.map(t => t.topic), yaExistian: TOPICOS.map(t => t.topic).filter(t => existentes.has(t)) };
+  if (actualizados.length) {
+    await admin.alterConfigs({
+      validateOnly: false,
+      resources: actualizados.map(t => ({ type: ConfigResourceTypes.TOPIC, name: t.topic, configEntries: t.configEntries }))
+    });
+  }
+  return { creados: faltantes.map(t => t.topic), actualizados: actualizados.map(t => t.topic) };
 }
 
 async function crearTopico(admin, { topic, particiones = config.particiones, replicas = config.replicas, retencionDias = 7, cleanupPolicy = 'delete' }) {
@@ -42,8 +54,7 @@ async function describirTopico(admin, topic) {
     admin.fetchTopicMetadata({ topics: [topic] }),
     admin.describeConfigs({
       includeSynonyms: false,
-      resources: [{ type: ConfigResourceTypes.TOPIC, name: topic,
-        configNames: ['retention.ms', 'cleanup.policy', 'min.insync.replicas'] }]
+      resources: [{ type: ConfigResourceTypes.TOPIC, name: topic, configNames: CONFIGS }]
     }),
     admin.fetchTopicOffsets(topic)
   ]);
@@ -53,7 +64,9 @@ async function describirTopico(admin, topic) {
     topic,
     particiones: particiones.length,
     replicas: particiones[0]?.replicas.length ?? 0,
-    retencionDias: Number(valores['retention.ms']) / 86400000,
+    retencionDias: Number((Number(valores['retention.ms']) / 86400000).toFixed(4)),
+    retencionMs: Number(valores['retention.ms']),
+    retencionBytes: Number(valores['retention.bytes']),          // -1 = sin límite por tamaño
     cleanupPolicy: valores['cleanup.policy'],
     minInsyncReplicas: Number(valores['min.insync.replicas']),
     mensajes: offsets.reduce((suma, p) => suma + Number(p.high) - Number(p.low), 0),
@@ -64,13 +77,26 @@ async function describirTopico(admin, topic) {
   };
 }
 
-/** Cambia retención y/o política de limpieza de un tópico existente. */
-async function modificarConfiguracion(admin, topic, { retencionDias, cleanupPolicy, minInsyncReplicas }) {
-  const configEntries = [];
-  if (retencionDias !== undefined) configEntries.push({ name: 'retention.ms', value: dias(Number(retencionDias)) });
-  if (cleanupPolicy !== undefined) configEntries.push({ name: 'cleanup.policy', value: cleanupPolicy });
-  if (minInsyncReplicas !== undefined) configEntries.push({ name: 'min.insync.replicas', value: String(minInsyncReplicas) });
-  if (!configEntries.length) throw new ErrorCliente('indicar retencionDias, cleanupPolicy o minInsyncReplicas');
+/**
+ * Cambia retención, política de limpieza o min.insync.replicas de un tópico existente.
+ * alterConfigs reemplaza toda la configuración del tópico, así que se parte de la
+ * configuración actual y solo se cambian los valores pedidos.
+ */
+async function modificarConfiguracion(admin, topic, { retencionDias, retencionMB, cleanupPolicy, minInsyncReplicas }) {
+  const cambios = {};
+  if (retencionDias !== undefined) cambios['retention.ms'] = dias(Number(retencionDias));
+  if (retencionMB !== undefined) cambios['retention.bytes'] = String(Math.round(Number(retencionMB) * 1024 * 1024));
+  if (cleanupPolicy !== undefined) cambios['cleanup.policy'] = cleanupPolicy;
+  if (minInsyncReplicas !== undefined) cambios['min.insync.replicas'] = String(minInsyncReplicas);
+  if (!Object.keys(cambios).length) throw new ErrorCliente('indicar retencionDias, retencionMB, cleanupPolicy o minInsyncReplicas');
+
+  const actual = await admin.describeConfigs({
+    includeSynonyms: false,
+    resources: [{ type: ConfigResourceTypes.TOPIC, name: topic, configNames: CONFIGS }]
+  });
+  const valores = Object.fromEntries(actual.resources[0].configEntries
+    .filter(c => !c.isDefault).map(c => [c.configName, c.configValue]));
+  const configEntries = Object.entries({ ...valores, ...cambios }).map(([name, value]) => ({ name, value }));
   await admin.alterConfigs({ validateOnly: false, resources: [{ type: ConfigResourceTypes.TOPIC, name: topic, configEntries }] });
   return describirTopico(admin, topic);
 }
@@ -78,6 +104,12 @@ async function modificarConfiguracion(admin, topic, { retencionDias, cleanupPoli
 /** Aumenta las particiones (Kafka no permite reducirlas). */
 async function aumentarParticiones(admin, topic, total) {
   await admin.createPartitions({ topicPartitions: [{ topic, count: Number(total) }] });
+  // Kafka tarda un instante en informar las particiones nuevas: se espera hasta verlas.
+  for (let intento = 0; intento < 10; intento++) {
+    const descripcion = await describirTopico(admin, topic);
+    if (descripcion.particiones >= Number(total)) return descripcion;
+    await new Promise(resolver => setTimeout(resolver, 500));
+  }
   return describirTopico(admin, topic);
 }
 

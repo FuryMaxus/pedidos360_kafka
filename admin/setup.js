@@ -1,7 +1,13 @@
-// Crea los tópicos del diseño (pedidos.eventos y pedidos.eventos.dlt) y muestra su configuración.
+// Crea los tópicos del diseño (pedidos.eventos, pedidos.eventos.dlt y pedidos.carga),
+// aplica su configuración y la muestra.
 const { crearKafka } = require('../shared/kafka');
 const { TOPICOS } = require('../shared/topics');
 const { crearTopicosBase, describirTopico } = require('./topicos');
+
+function textoRetencion({ retencionMs, retencionBytes }) {
+  const tiempo = retencionMs >= 86400000 ? `${retencionMs / 86400000} días` : `${retencionMs / 60000} min`;
+  return retencionBytes > 0 ? `${tiempo} o ${retencionBytes / 1024 / 1024} MB` : tiempo;
+}
 
 async function main() {
   const admin = crearKafka('pedidos360-admin-setup').admin();
@@ -11,7 +17,7 @@ async function main() {
     console.log('Tópicos creados:', resultado.creados.join(', ') || 'ninguno (ya existían)');
     for (const { topic } of TOPICOS) {
       const t = await describirTopico(admin, topic);
-      console.log(`- ${t.topic}: ${t.particiones} particiones, ${t.replicas} réplicas, ${t.retencionDias} días, cleanup=${t.cleanupPolicy}, min.insync=${t.minInsyncReplicas}`);
+      console.log(`- ${t.topic}: ${t.particiones} particiones, ${t.replicas} réplicas, retención ${textoRetencion(t)}, cleanup=${t.cleanupPolicy}, min.insync=${t.minInsyncReplicas}`);
     }
   } finally {
     await admin.disconnect();

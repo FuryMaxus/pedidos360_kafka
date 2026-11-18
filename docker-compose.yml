@@ -29,6 +29,8 @@ x-kafka-env: &kafka-env
   KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 3
   KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 2
   KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+  # Cada 30 s el broker revisa qué segmentos borrar por retención (por defecto 5 min).
+  KAFKA_LOG_RETENTION_CHECK_INTERVAL_MS: 30000
   KAFKA_HEAP_OPTS: -Xms256m -Xmx512m
 
 services:

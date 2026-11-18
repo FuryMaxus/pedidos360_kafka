@@ -13,7 +13,13 @@
     "errores": "node --env-file-if-exists=.env --disable-warning=TimeoutNegativeWarning scripts/errores.js",
     "dlt": "node --env-file-if-exists=.env --disable-warning=TimeoutNegativeWarning scripts/dlt.js",
     "kpis": "node --env-file-if-exists=.env --disable-warning=TimeoutNegativeWarning scripts/kpis.js",
-    "timeline": "node --env-file-if-exists=.env --disable-warning=TimeoutNegativeWarning scripts/timeline.js"
+    "timeline": "node --env-file-if-exists=.env --disable-warning=TimeoutNegativeWarning scripts/timeline.js",
+    "lag": "node --env-file-if-exists=.env --disable-warning=TimeoutNegativeWarning scripts/lag.js",
+    "generar": "node --env-file-if-exists=.env --disable-warning=TimeoutNegativeWarning scripts/generar.js",
+    "particiones": "node --env-file-if-exists=.env --disable-warning=TimeoutNegativeWarning scripts/particiones.js",
+    "replicas": "node --env-file-if-exists=.env --disable-warning=TimeoutNegativeWarning scripts/replicas.js",
+    "retencion": "node --env-file-if-exists=.env --disable-warning=TimeoutNegativeWarning scripts/retencion.js",
+    "carga": "node --env-file-if-exists=.env --disable-warning=TimeoutNegativeWarning scripts/carga.js"
   },
   "dependencies": {
     "express": "^5.1.0",

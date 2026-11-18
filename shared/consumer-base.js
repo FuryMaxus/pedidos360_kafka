@@ -66,6 +66,9 @@ async function iniciarConsumidor({ servicio, groupId, procesar }) {
     const errores = validar(evento);
     if (errores.length) return enviarADlt(message, partition, errores.join('; '), correlationId, 0);
 
+    // Consumidor lento a propósito (PROCESS_DELAY_MS) para ver crecer el lag.
+    if (config.demoraMs) await esperar(config.demoraMs);
+
     const fallo = header(message.headers, 'simularFallo');
     for (let intento = 1; intento <= config.intentos; intento++) {
       try {
@@ -90,7 +93,7 @@ async function iniciarConsumidor({ servicio, groupId, procesar }) {
   await consumer.subscribe({ topic: PEDIDOS, fromBeginning: true });
 
   await consumer.run({ eachMessage: manejarMensaje });
-  log('info', 'consumidor.iniciado', { groupId, topic: PEDIDOS });
+  log('info', 'consumidor.iniciado', { groupId, topic: PEDIDOS, demoraMs: config.demoraMs });
 
   const cerrar = async () => {
     log('info', 'consumidor.deteniendo', { groupId });
