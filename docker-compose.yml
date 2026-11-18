@@ -1,4 +1,7 @@
-# Kafka local para Pedidos360: ZooKeeper + 3 brokers + Kafka UI.
+# Kafka local para Pedidos360: 3 ZooKeeper + 3 brokers + Kafka UI.
+#
+# ZooKeeper en ensamble de 3 nodos: si cae uno, los otros dos siguen formando mayoría (quórum)
+# y el clúster puede seguir eligiendo líderes y creando tópicos.
 #
 # Puertos:
 #   9092, 9093, 9094 -> brokers para el código Node en el computador (localhost)
@@ -7,9 +10,21 @@
 
 name: pedidos360-kafka
 
+x-zookeeper: &zookeeper
+  image: confluentinc/cp-zookeeper:7.5.0
+  restart: unless-stopped
+
+x-zookeeper-env: &zookeeper-env
+  ZOOKEEPER_CLIENT_PORT: 2181
+  ZOOKEEPER_TICK_TIME: 2000
+  ZOOKEEPER_INIT_LIMIT: 5
+  ZOOKEEPER_SYNC_LIMIT: 2
+  # Los 3 nodos del ensamble (2888: sincronización, 3888: elección de líder)
+  ZOOKEEPER_SERVERS: zookeeper1:2888:3888;zookeeper2:2888:3888;zookeeper3:2888:3888
+
 x-kafka: &kafka
   image: confluentinc/cp-kafka:7.5.0
-  depends_on: [zookeeper]
+  depends_on: [zookeeper1, zookeeper2, zookeeper3]
   restart: unless-stopped
   healthcheck:
     test: ['CMD-SHELL', 'kafka-broker-api-versions --bootstrap-server localhost:29092 >/dev/null 2>&1']
@@ -19,7 +34,7 @@ x-kafka: &kafka
     retries: 12
 
 x-kafka-env: &kafka-env
-  KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+  KAFKA_ZOOKEEPER_CONNECT: zookeeper1:2181,zookeeper2:2181,zookeeper3:2181
   KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
   KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
   # Los tópicos los crea el servicio admin con su configuración versionada.
@@ -34,13 +49,26 @@ x-kafka-env: &kafka-env
   KAFKA_HEAP_OPTS: -Xms256m -Xmx512m
 
 services:
-  zookeeper:
-    image: confluentinc/cp-zookeeper:7.5.0
-    restart: unless-stopped
+  zookeeper1:
+    <<: *zookeeper
     environment:
-      ZOOKEEPER_CLIENT_PORT: 2181
-      ZOOKEEPER_TICK_TIME: 2000
+      <<: *zookeeper-env
+      ZOOKEEPER_SERVER_ID: 1
     volumes: [zk-data:/var/lib/zookeeper/data, zk-log:/var/lib/zookeeper/log]
+
+  zookeeper2:
+    <<: *zookeeper
+    environment:
+      <<: *zookeeper-env
+      ZOOKEEPER_SERVER_ID: 2
+    volumes: [zk2-data:/var/lib/zookeeper/data, zk2-log:/var/lib/zookeeper/log]
+
+  zookeeper3:
+    <<: *zookeeper
+    environment:
+      <<: *zookeeper-env
+      ZOOKEEPER_SERVER_ID: 3
+    volumes: [zk3-data:/var/lib/zookeeper/data, zk3-log:/var/lib/zookeeper/log]
 
   kafka1:
     <<: *kafka
@@ -85,8 +113,12 @@ services:
       KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka1:29092,kafka2:29092,kafka3:29092
 
 volumes:
-  zk-data:
+  zk-data:      # zookeeper1 (conserva el nombre original para no perder los datos)
   zk-log:
+  zk2-data:
+  zk2-log:
+  zk3-data:
+  zk3-log:
   kafka1-data:
   kafka2-data:
   kafka3-data:

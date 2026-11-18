@@ -20,6 +20,7 @@ Los mensajes que fallan van a `pedidos.eventos.dlt` con el motivo. Un servicio *
 | --- | --- |
 | 3 particiones | Hasta 3 consumidores por grupo en paralelo |
 | 3 réplicas, `min.insync.replicas=2` | No se pierden datos si cae un broker |
+| 3 ZooKeeper (ensamble) | Si cae uno, los otros dos forman mayoría y el clúster sigue eligiendo líderes y creando tópicos |
 | Retención: eventos 7 días o 512 MB, DLT 30 días, carga 5 min o 50 MB | Releer la semana para reportes; tiempo para revisar los fallos; los datos de carga son descartables |
 | `key = pedidoId` | Los eventos de un pedido quedan en la misma partición, en orden |
 | `acks=-1` + productor idempotente | Confirmación de las réplicas, sin duplicados por reintentos de red |
@@ -37,7 +38,7 @@ Evento (DTO):
 ## Estructura
 
 ```text
-docker-compose.yml   Kafka (ZooKeeper, 3 brokers) + Kafka UI
+docker-compose.yml   Kafka (3 ZooKeeper, 3 brokers) + Kafka UI
 shared/              configuración, cliente Kafka, tópicos, DTO, base de consumidores, SQLite
 bridge/producer.js   productor simulado
 report/, audit/      consumer.js (mensajería) + handler.js (lógica de negocio)
@@ -93,6 +94,8 @@ docker compose start kafka2      # vuelve y entra de nuevo al ISR
 ```
 
 Al apagar `kafka2` sus réplicas salen del ISR y otro broker toma el liderazgo. Con RF=3, `acks=all` y `min.insync.replicas=2` se puede seguir escribiendo con 1 broker caído.
+
+También se puede apagar un ZooKeeper (`docker compose stop zookeeper1`): los otros dos eligen un nuevo líder entre ellos (se ve en `docker compose logs zookeeper3` como `LEADING`) y Kafka sigue funcionando.
 
 ### Caso 3: ver cómo Kafka borra los mensajes viejos
 
